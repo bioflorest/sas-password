@@ -1,0 +1,273 @@
+
+/* ===== NÚCLEO DO SISTEMA ===== */
+/* ══ MÓDULO: IMPORTAR PDF COM IA ══ */
+
+var _pdfArquivoBase64 = null;
+var _pdfDadosExtraidos = [];
+
+function pdfSelecionado(input) {
+  var file = input.files[0];
+  if (!file) return;
+
+  var info = document.getElementById('pdf-arquivo-info');
+  document.getElementById('pdf-nome-arquivo').textContent = file.name;
+  document.getElementById('pdf-tamanho-arquivo').textContent = (file.size / 1024 / 1024).toFixed(2) + ' MB';
+  info.style.display = 'flex';
+
+  document.getElementById('pdf-resultado').style.display = 'none';
+
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    _pdfArquivoBase64 = e.target.result.split(',')[1];
+    document.getElementById('btn-processar-pdf').disabled = false;
+  };
+  reader.readAsDataURL(file);
+}
+
+function removerPDF() {
+  _pdfArquivoBase64 = null;
+  document.getElementById('pdf-arquivo-info').style.display = 'none';
+  document.getElementById('pdf-file-input').value = '';
+  document.getElementById('btn-processar-pdf').disabled = true;
+  document.getElementById('pdf-resultado').style.display = 'none';
+}
+
+async function processarPDFcomIA() {
+  if (!_pdfArquivoBase64) { alert('Selecione um PDF primeiro.'); return; }
+
+  document.getElementById('pdf-status').style.display = 'block';
+  document.getElementById('pdf-resultado').style.display = 'none';
+  document.getElementById('btn-processar-pdf').disabled = true;
+  document.getElementById('pdf-status-texto').textContent = 'Enviando PDF para a IA...';
+
+  try {
+    var prompt = `Você é um especialista em fertilidade do solo e nutrição de plantas. Analise este documento técnico agronômico (manual de calagem e adubação, boletim Embrapa, etc.) e extraia todas as recomendações de adubação e calagem por cultura.
+
+Retorne SOMENTE um JSON válido, sem markdown, sem texto extra, neste formato exato:
+{
+  "fonte": "Nome do documento/publicação identificado",
+  "regiao": "Região ou estado de referência se identificado, ou 'Nacional'",
+  "resumo": "Breve descrição do documento em 2-3 linhas",
+  "observacoes": "Observações importantes sobre metodologia, limitações ou contexto do documento",
+  "culturas": [
+    {
+      "nome": "NOME_CULTURA_EM_MAIUSCULO",
+      "n": 100,
+      "p": 80,
+      "k": 90,
+      "ca": 40,
+      "mg": 20,
+      "s": 15,
+      "b": 0.5,
+      "zn": 2,
+      "cu": 0.5,
+      "mn": 1,
+      "fe": 1,
+      "calcario_arenoso": 2.0,
+      "calcario_medio": 2.5,
+      "calcario_argiloso": 3.0,
+      "observacao": "nota específica desta cultura se houver"
+    }
+  ]
+}
+
+Regras:
+- Use valores numéricos (não strings). Se não encontrar um valor, use null.
+- Para calcário, use t/ha. Para nutrientes, use kg/ha.
+- Se o documento usar faixas (ex: 80-120 kg/ha), use a média.
+- Inclua TODAS as culturas mencionadas no documento.
+- Se o documento não tiver dados suficientes para uma cultura, inclua com os campos disponíveis e null nos demais.`;
+
+    document.getElementById('pdf-status-texto').textContent = 'IA analisando o documento...';
+
+    var response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: _pdfArquivoBase64 }
+            },
+            { type: 'text', text: prompt }
+          ]
+        }]
+      })
+    });
+
+    var data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message || 'Erro na API');
+
+    var texto = data.content.map(function(i){ return i.text || ''; }).join('');
+    // Remove possíveis ```json ``` caso apareçam
+    texto = texto.replace(/```json/g,'').replace(/```/g,'').trim();
+
+    var resultado = JSON.parse(texto);
+    _pdfDadosExtraidos = resultado.culturas || [];
+
+    exibirResultadoPDF(resultado);
+
+  } catch(err) {
+    document.getElementById('pdf-status').style.display = 'none';
+    document.getElementById('btn-processar-pdf').disabled = false;
+    alert('Erro ao processar o PDF: ' + err.message + '\n\nVerifique se o arquivo é um PDF legível.');
+    console.error(err);
+  }
+}
+
+function exibirResultadoPDF(resultado) {
+  document.getElementById('pdf-status').style.display = 'none';
+  document.getElementById('btn-processar-pdf').disabled = false;
+
+  document.getElementById('pdf-resumo-fonte').innerHTML =
+    '<strong>📚 Fonte:</strong> ' + (resultado.fonte || 'Não identificada') + '<br>' +
+    '<strong>🗺 Região:</strong> ' + (resultado.regiao || 'Nacional') + '<br>' +
+    '<strong>📝 Resumo:</strong> ' + (resultado.resumo || '');
+
+  document.getElementById('pdf-obs-ia').textContent = resultado.observacoes || '';
+
+  var tbody = document.getElementById('pdf-tabela-corpo');
+  tbody.innerHTML = '';
+
+  if (!_pdfDadosExtraidos || _pdfDadosExtraidos.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:20px;color:#999;">Nenhuma cultura encontrada no documento.</td></tr>';
+  } else {
+    _pdfDadosExtraidos.forEach(function(c, idx) {
+      var tr = document.createElement('tr');
+      tr.style.background = idx % 2 === 0 ? '#fff' : '#f9f9f9';
+      var calcStr = '';
+      if (c.calcario_arenoso != null || c.calcario_medio != null || c.calcario_argiloso != null) {
+        calcStr = [c.calcario_arenoso, c.calcario_medio, c.calcario_argiloso]
+          .map(function(v){ return v != null ? v : '—'; }).join(' / ');
+      } else { calcStr = '—'; }
+
+      tr.innerHTML =
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;font-weight:700;color:#1a5c38;white-space:nowrap;">' + (c.nome || '—') + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;">' + (c.n != null ? c.n : '—') + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;">' + (c.p != null ? c.p : '—') + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;">' + (c.k != null ? c.k : '—') + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;">' + (c.ca != null ? c.ca : '—') + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;">' + (c.mg != null ? c.mg : '—') + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;">' + (c.s != null ? c.s : '—') + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;font-size:.74rem;">' + calcStr + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;font-size:.72rem;color:#555;">' + (resultado.fonte || '—') + '</td>' +
+        '<td style="padding:7px 10px;border:1px solid #e0e0e0;text-align:center;">' +
+          '<button onclick="aplicarUmParametro(' + idx + ')" ' +
+          'style="background:#1a5c38;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:.74rem;cursor:pointer;font-family:Nunito,sans-serif;white-space:nowrap;">✅ Aplicar</button>' +
+        '</td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('pdf-resultado').style.display = 'block';
+  document.getElementById('pdf-resultado').scrollIntoView({behavior:'smooth'});
+}
+
+function aplicarUmParametro(idx) {
+  var c = _pdfDadosExtraidos[idx];
+  if (!c || !c.nome) return;
+  _aplicarCulturaNoSistema(c);
+  alert('✅ Parâmetros de "' + c.nome + '" aplicados ao sistema!');
+}
+
+function aplicarTodosParametros() {
+  if (_pdfDadosExtraidos.length === 0) { alert('Nenhum dado para aplicar.'); return; }
+  var count = 0;
+  _pdfDadosExtraidos.forEach(function(c) {
+    if (c && c.nome) { _aplicarCulturaNoSistema(c); count++; }
+  });
+  alert('✅ ' + count + ' cultura(s) atualizadas no sistema!\n\nOs novos parâmetros serão usados nas próximas recomendações.');
+}
+
+function _aplicarCulturaNoSistema(c) {
+  var nome = c.nome.toUpperCase().trim();
+
+  // Atualiza _ssTabela (recomendação sem análise de solo)
+  if (typeof _ssTabela !== 'undefined') {
+    _ssTabela[nome] = {
+      n:  c.n  != null ? c.n  : (_ssTabela[nome] ? _ssTabela[nome].n  : 100),
+      p:  c.p  != null ? c.p  : (_ssTabela[nome] ? _ssTabela[nome].p  : 80),
+      k:  c.k  != null ? c.k  : (_ssTabela[nome] ? _ssTabela[nome].k  : 80),
+      ca: c.ca != null ? c.ca : (_ssTabela[nome] ? _ssTabela[nome].ca : 40),
+      mg: c.mg != null ? c.mg : (_ssTabela[nome] ? _ssTabela[nome].mg : 20),
+      s:  c.s  != null ? c.s  : (_ssTabela[nome] ? _ssTabela[nome].s  : 15),
+      b:  c.b  != null ? c.b  : (_ssTabela[nome] ? _ssTabela[nome].b  : 0.5),
+      zn: c.zn != null ? c.zn : (_ssTabela[nome] ? _ssTabela[nome].zn : 2),
+      cu: c.cu != null ? c.cu : (_ssTabela[nome] ? _ssTabela[nome].cu : 0.5),
+      mn: c.mn != null ? c.mn : (_ssTabela[nome] ? _ssTabela[nome].mn : 1),
+      fe: c.fe != null ? c.fe : (_ssTabela[nome] ? _ssTabela[nome].fe : 1),
+      calcario: {
+        arenoso:  c.calcario_arenoso  != null ? c.calcario_arenoso  : (_ssTabela[nome] ? _ssTabela[nome].calcario.arenoso  : 2),
+        medio:    c.calcario_medio    != null ? c.calcario_medio    : (_ssTabela[nome] ? _ssTabela[nome].calcario.medio    : 2.5),
+        argiloso: c.calcario_argiloso != null ? c.calcario_argiloso : (_ssTabela[nome] ? _ssTabela[nome].calcario.argiloso : 3)
+      }
+    };
+  }
+
+  // Atualiza _rfSoloRef (recomendação com análise de solo)
+  if (typeof _rfSoloRef !== 'undefined') {
+    var refAtual = _rfSoloRef[nome] || {};
+    _rfSoloRef[nome] = Object.assign({}, refAtual, {
+      p:  c.p  != null ? c.p  : refAtual.p,
+      k:  c.k  != null ? c.k  : refAtual.k,
+      ca: c.ca != null ? c.ca : refAtual.ca,
+      mg: c.mg != null ? c.mg : refAtual.mg,
+      s:  c.s  != null ? c.s  : refAtual.s,
+      b:  c.b  != null ? c.b  : refAtual.b,
+      zn: c.zn != null ? c.zn : refAtual.zn,
+      cu: c.cu != null ? c.cu : refAtual.cu,
+      mn: c.mn != null ? c.mn : refAtual.mn,
+      fe: c.fe != null ? c.fe : refAtual.fe
+    });
+  }
+
+  // Atualiza culturasDB (modal Parâmetros de Cultura) se a cultura existir
+  if (typeof culturasDB !== 'undefined') {
+    var dbIdx = culturasDB.findIndex(function(d){ return d.nome === nome; });
+    if(dbIdx >= 0){
+      var dbEntry = culturasDB[dbIdx];
+      if(c.n  != null) dbEntry.n  = c.n;
+      if(c.p  != null) dbEntry.p  = c.p;
+      if(c.k  != null) dbEntry.k  = c.k;
+      if(c.ca != null) dbEntry.ca = c.ca;
+      if(c.mg != null) dbEntry.mg = c.mg;
+      if(c.s  != null) dbEntry.s  = c.s;
+      if(c.b  != null) dbEntry.b  = c.b;
+      if(c.zn != null) dbEntry.zn = c.zn;
+      if(c.cu != null) dbEntry.cu = c.cu;
+      if(c.mn != null) dbEntry.mn = c.mn;
+      if(c.fe != null) dbEntry.fe = c.fe;
+      if(c.calcario_arenoso != null) dbEntry.arn = c.calcario_arenoso;
+      if(c.calcario_medio   != null) dbEntry.med = c.calcario_medio;
+      if(c.calcario_argiloso!= null) dbEntry.arg = c.calcario_argiloso;
+    }
+  }
+
+  // Salva registro no _safeStorage para auditoria
+  try {
+    var historico = JSON.parse(_safeStorage.getItem('sas_parametros_importados') || '[]');
+    historico.push({
+      cultura: nome,
+      dados: c,
+      data: new Date().toLocaleDateString('pt-BR'),
+      hora: new Date().toLocaleTimeString('pt-BR')
+    });
+    _safeStorage.setItem('sas_parametros_importados', JSON.stringify(historico));
+  } catch(e) { /* silencia falha de auditoria */ }
+}
+
+function limparResultadoPDF() {
+  _pdfDadosExtraidos = [];
+  _pdfArquivoBase64 = null;
+  document.getElementById('pdf-resultado').style.display = 'none';
+  document.getElementById('pdf-arquivo-info').style.display = 'none';
+  document.getElementById('pdf-file-input').value = '';
+  document.getElementById('btn-processar-pdf').disabled = true;
+}
+
+
+/* ══ SAFE STORAGE: wrapper com fallback em memória para ambientes sem localStorage ══ */
