@@ -1,0 +1,18 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping SAS Sistema de Analise de Solo
+        env:
+          SUPABASE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0b2xlYmthcG15c2J0cXB1c2pzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2NDA0MjAsImV4cCI6MjA5OTIxNjQyMH0.eSGMG0PrmFfqXbQE28vz2FE_Dz63G0PBVlaZx5kjxDs
+        run: |
+          curl -s -o /dev/null \
+            -H "apikey: $SUPABASE_KEY" \
+            https://btolebkapmysbtqpusjs.supabase.co/rest/v1/
